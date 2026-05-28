@@ -8,6 +8,7 @@ repositories {
 
 dependencies {
     compileOnly("net.portswigger.burp.extensions:montoya-api:2026.4")
+    implementation("org.msgpack:msgpack-core:0.9.12")
 }
 
 tasks.withType<JavaCompile>().configureEach {

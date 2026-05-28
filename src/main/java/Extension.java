@@ -14,11 +14,11 @@ import org.msgpack.core.MessagePack;
 import org.msgpack.core.MessageUnpacker;
 import org.msgpack.value.Value;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-
 public class Extension implements BurpExtension {
+    private static final int MAX_DECODE_BYTES = 512 * 1024;
+    private static final int MAX_STREAM_VALUES = 32;
+    private static final int MAX_NOTE_CHARS = 8192;
+
     @Override
     public void initialize(MontoyaApi montoyaApi) {
         montoyaApi.extension().setName("MsgPack Socket Unpacker");
@@ -46,13 +46,12 @@ public class Extension implements BurpExtension {
         @Override
         public BinaryMessageReceivedAction handleBinaryMessageReceived(InterceptedBinaryMessage interceptedBinaryMessage) {
             ByteArray payload = interceptedBinaryMessage.payload();
-            String decoded = tryDecodeMessagePack(payload.getBytes());
-            if (decoded == null) {
-                return BinaryMessageReceivedAction.continueWith(payload);
+            String decoded = tryDecodeMessagePack(payload);
+            if (decoded != null) {
+                appendDecodedNotes(interceptedBinaryMessage, decoded);
             }
 
-            byte[] utf8Bytes = decoded.getBytes(StandardCharsets.UTF_8);
-            return BinaryMessageReceivedAction.continueWith(ByteArray.byteArray(utf8Bytes));
+            return BinaryMessageReceivedAction.continueWith(payload);
         }
 
         @Override
@@ -61,37 +60,65 @@ public class Extension implements BurpExtension {
         }
     }
 
-    private static String tryDecodeMessagePack(byte[] payload) {
-        if (payload == null || payload.length == 0) {
+    private static String tryDecodeMessagePack(ByteArray payload) {
+        if (payload == null) {
             return null;
         }
 
-        try (MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(payload)) {
-            List<Value> values = new ArrayList<>();
+        int length = payload.length();
+        if (length == 0 || length > MAX_DECODE_BYTES) {
+            return null;
+        }
+
+        byte[] bytes = payload.getBytes();
+        if ((bytes[0] & 0xFF) == 0xC1) {
+            return null;
+        }
+
+        try (MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(bytes)) {
+            Value first = unpacker.unpackValue();
+            if (!unpacker.hasNext()) {
+                return first.toJson();
+            }
+
+            StringBuilder json = new StringBuilder(Math.min(length * 2, MAX_DECODE_BYTES * 2));
+            json.append('[').append(first.toJson());
+
+            int count = 1;
             while (unpacker.hasNext()) {
-                values.add(unpacker.unpackValue());
-            }
-
-            if (values.isEmpty()) {
-                return null;
-            }
-
-            if (values.size() == 1) {
-                return values.get(0).toJson();
-            }
-
-            StringBuilder json = new StringBuilder(2 + (values.size() * 16));
-            json.append('[');
-            for (int i = 0; i < values.size(); i++) {
-                if (i > 0) {
-                    json.append(',');
+                if (count >= MAX_STREAM_VALUES) {
+                    return null;
                 }
-                json.append(values.get(i).toJson());
+                json.append(',').append(unpacker.unpackValue().toJson());
+                count++;
             }
             json.append(']');
             return json.toString();
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static void appendDecodedNotes(InterceptedBinaryMessage interceptedBinaryMessage, String decoded) {
+        if (decoded == null || decoded.isEmpty()) {
+            return;
+        }
+
+        String trimmed = decoded.length() > MAX_NOTE_CHARS
+                ? decoded.substring(0, MAX_NOTE_CHARS) + "..."
+                : decoded;
+        String prefix = "msgpack-decoded: ";
+        String existing = interceptedBinaryMessage.annotations().notes();
+
+        if (existing == null || existing.isBlank()) {
+            interceptedBinaryMessage.annotations().setNotes(prefix + trimmed);
+            return;
+        }
+
+        if (existing.contains(prefix)) {
+            return;
+        }
+
+        interceptedBinaryMessage.annotations().setNotes(existing + "\n" + prefix + trimmed);
     }
 }

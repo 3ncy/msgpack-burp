@@ -12,7 +12,15 @@ import burp.api.montoya.proxy.websocket.TextMessageReceivedAction;
 import burp.api.montoya.proxy.websocket.TextMessageToBeSentAction;
 import org.msgpack.core.MessagePack;
 import org.msgpack.core.MessageUnpacker;
+import org.msgpack.value.ExtensionValue;
+import org.msgpack.value.ValueFactory;
 import org.msgpack.value.Value;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 public class Extension implements BurpExtension {
     @Override
@@ -72,7 +80,7 @@ public class Extension implements BurpExtension {
         }
 
         try (MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(bytes)) {
-            Value first = unpacker.unpackValue();
+            Value first = normalizeValue(unpacker.unpackValue());
             if (!unpacker.hasNext()) {
                 return first.toJson();
             }
@@ -81,13 +89,58 @@ public class Extension implements BurpExtension {
             json.append('[').append(first.toJson());
 
             while (unpacker.hasNext()) {
-                json.append(',').append(unpacker.unpackValue().toJson());
+                json.append(',').append(normalizeValue(unpacker.unpackValue()).toJson());
             }
             json.append(']');
             return json.toString();
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static Value normalizeValue(Value value) {
+        if (value == null) {
+            return ValueFactory.newNil();
+        }
+
+        if (value.isTimestampValue()) {
+            return value;
+        }
+
+        if (value.isExtensionValue()) {
+            ExtensionValue extensionValue = value.asExtensionValue();
+            byte[] data = extensionValue.getData();
+
+            if (extensionValue.getType() == 0) {
+                if (data.length == 1) {
+                    return ValueFactory.newNil();
+                }
+
+                if (data.length == Long.BYTES) {
+                    return ValueFactory.newTimestamp(ByteBuffer.wrap(data).getLong());
+                }
+            }
+
+            return value;
+        }
+
+        if (value.isArrayValue()) {
+            List<Value> normalizedValues = new ArrayList<>(value.asArrayValue().size());
+            for (Value element : value.asArrayValue()) {
+                normalizedValues.add(normalizeValue(element));
+            }
+            return ValueFactory.newArray(normalizedValues);
+        }
+
+        if (value.isMapValue()) {
+            Map<Value, Value> normalizedMap = new LinkedHashMap<>();
+            for (Map.Entry<Value, Value> entry : value.asMapValue().entrySet()) {
+                normalizedMap.put(normalizeValue(entry.getKey()), normalizeValue(entry.getValue()));
+            }
+            return ValueFactory.newMap(normalizedMap);
+        }
+
+        return value;
     }
 
     private static void appendDecodedNotes(InterceptedBinaryMessage interceptedBinaryMessage, String decoded) {

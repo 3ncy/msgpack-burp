@@ -33,7 +33,3 @@ The built JAR file will be in `build/libs/` and can be loaded directly into Burp
 - See @docs/montoya-api-examples.md for code patterns and extension structure  
 - See @docs/development-best-practices.md for development guidelines
 - See @docs/resources.md for external documentation and links
-
-## Current State
-
-This is a template project with minimal functionality. The main extension class currently only sets the extension name to "My Extension" and contains a TODO for actual implementation.
